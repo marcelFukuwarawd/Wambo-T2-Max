@@ -8,9 +8,10 @@ from .qt import QtCore, QtGui, QtWidgets, Qt, maya_main_window
 from . import style
 from .graph_view import GraphView
 from .params import ParamPanel
+from .tools_tab import ToolsTab
 from .. import __version__
 from ..core.data import EvalError
-from ..maya import scene, system as fsys, brushes, render
+from ..maya import scene, system as fsys, render
 
 _WINDOW = None
 
@@ -143,7 +144,8 @@ class WamboFurWindow(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.params.paramChanged.connect(self._param_changed)
         self.params.renamed.connect(self._renamed)
         self.tabs.addTab(self.params, "Node")
-        self.tabs.addTab(self._build_groom(), "Groom")
+        self.tools = ToolsTab(self)
+        self.tabs.addTab(self.tools, "Tools")
         self.tabs.addTab(self._build_render(), "Render")
         self.tabs.setMinimumWidth(330)
         split.addWidget(self.tabs)
@@ -155,76 +157,6 @@ class WamboFurWindow(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.status = QtWidgets.QLabel("Ready")
         self.status.setObjectName("wfStatus")
         root.addWidget(self.status)
-
-    def _build_groom(self):
-        w = QtWidgets.QWidget()
-        w.setObjectName("wfPanel")
-        lay = QtWidgets.QVBoxLayout(w)
-        lay.setContentsMargins(10, 10, 10, 10)
-        lay.addWidget(_section("Guides"))
-        self.g_count = _ispin(1, 100000, 150)
-        self.g_len = _spin(0.001, 1000, 1.0)
-        self.g_seg = _ispin(3, 64, 6)
-        f = QtWidgets.QFormLayout()
-        f.addRow("Count", self.g_count)
-        f.addRow("Length", self.g_len)
-        f.addRow("Segments", self.g_seg)
-        lay.addLayout(f)
-        mk = QtWidgets.QPushButton("Create Guides on Mesh")
-        mk.setObjectName("wfPrimary")
-        mk.clicked.connect(self.create_guides)
-        sel = QtWidgets.QPushButton("Select Guides")
-        sel.clicked.connect(self.select_guides)
-        lay.addLayout(_hbox(mk, sel))
-
-        lay.addWidget(_section("Brushes"))
-        grid = QtWidgets.QGridLayout()
-        self.brush_group = QtWidgets.QButtonGroup(self)
-        self.brush_group.setExclusive(True)
-        labels = [("comb", "Comb"), ("length", "Length"), ("smooth", "Smooth"), ("puff", "Puff"),
-                  ("straighten", "Straighten"), ("move", "Move"), ("cut", "Cut"), ("add", "Add"),
-                  ("remove", "Remove"), ("off", "Off")]
-        self.OFF_INDEX = len(labels) - 1
-        for i, (mode, text) in enumerate(labels):
-            b = QtWidgets.QToolButton()
-            b.setText(text)
-            b.setCheckable(True)
-            b.setMinimumWidth(62)
-            b.setProperty("mode", mode)
-            self.brush_group.addButton(b, i)
-            grid.addWidget(b, i // 5, i % 5)
-            b.clicked.connect(lambda checked=False, m=mode: self.set_brush(m))
-        lay.addLayout(grid)
-        self.b_radius = _ispin(4, 600, int(brushes.STATE.radius))
-        self.b_radius.setSuffix(" px")
-        self.b_strength = _spin(0.0, 1.0, brushes.STATE.strength, 2, 0.05)
-        self.b_keep = QtWidgets.QCheckBox("Preserve length")
-        self.b_keep.setChecked(True)
-        self.b_upd = QtWidgets.QCheckBox("Update fur after each stroke")
-        self.b_upd.setChecked(True)
-        self.b_live = QtWidgets.QCheckBox("Live fur while brushing")
-        self.b_live.setChecked(True)
-        self.b_live.setToolTip("Re-evaluates the preview during the stroke when it is fast enough "
-                               "(lower the Preview % for heavy grooms)")
-        for wdg in (self.b_radius, self.b_strength):
-            wdg.valueChanged.connect(self._brush_settings)
-        self.b_keep.toggled.connect(self._brush_settings)
-        f2 = QtWidgets.QFormLayout()
-        f2.addRow("Radius", self.b_radius)
-        f2.addRow("Strength", self.b_strength)
-        f2.addRow("", self.b_keep)
-        f2.addRow("", self.b_upd)
-        f2.addRow("", self.b_live)
-        lay.addLayout(f2)
-        hint = QtWidgets.QLabel("Drag in the viewport over the guide curves - the circle shows the brush.\n"
-                                "B + left-drag: radius   \u00b7   B + middle-drag: strength\n"
-                                "Shift: smooth   \u00b7   Ctrl: invert (Length shortens, Puff flattens)\n"
-                                "Each stroke is one undo step (Ctrl+Z). Add/Remove: click on the mesh.")
-        hint.setWordWrap(True)
-        hint.setObjectName("wfDim")
-        lay.addWidget(hint)
-        lay.addStretch(1)
-        return w
 
     def _build_render(self):
         w = QtWidgets.QWidget()
@@ -423,55 +355,17 @@ class WamboFurWindow(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self.update_preview()
 
     # ================================================================ groom
-    def create_guides(self):
-        if not self.system:
-            return
-        try:
-            grp = self.system.create_guides(self.g_count.value(), self.g_len.value(), self.g_seg.value())
-        except EvalError as e:
-            self._status(str(e), error=True)
-            return
-        self.graph = self.system.load_graph()
-        self.view.set_graph(self.graph)
-        self.view.frame_all()
-        self.update_preview()
-        self._status("Created guides in %s - pick a brush to groom them." % grp)
-
-    def select_guides(self):
-        g = self.system.guides_group() if self.system else None
-        if g:
-            cmds.select(g)
-
-    def set_brush(self, mode):
-        if mode == "off":
-            brushes.deactivate()
-            return
-        g = self.system.guides_group() if self.system else None
-        if not g:
-            self._status("Create guides first (Groom tab).", error=True)
-            self.brush_group.button(self.OFF_INDEX).setChecked(True)
-            return
-        self._brush_settings()
-        brushes.activate(mode, g, on_stroke=self._after_stroke, on_settings=self._brush_from_viewport)
-
-    def _brush_settings(self, *a):
-        brushes.STATE.radius = float(self.b_radius.value())
-        brushes.STATE.strength = float(self.b_strength.value())
-        brushes.STATE.preserve_length = self.b_keep.isChecked()
-        brushes.sync_settings()
-
-    def _brush_from_viewport(self):
-        """B + drag in the viewport changed radius/strength: mirror it in the UI."""
-        for wdg, val in ((self.b_radius, int(brushes.STATE.radius)), (self.b_strength, brushes.STATE.strength)):
-            wdg.blockSignals(True)
-            wdg.setValue(val)
-            wdg.blockSignals(False)
+    def reload_graph(self):
+        """Re-read the graph after tools changed it (e.g. guides wired in)."""
+        if self.system:
+            self.graph = self.system.load_graph()
+            self.view.set_graph(self.graph)
 
     def _after_stroke(self, group, final=True):
         if final:
-            if self.b_upd.isChecked():
+            if self.tools.upd.isChecked():
                 self._quiet_update()
-        elif self.b_live.isChecked() and getattr(self.system, "last_time", 1.0) < 0.25:
+        elif self.tools.live.isChecked() and getattr(self.system, "last_time", 1.0) < 0.25:
             self._quiet_update()
 
     def _quiet_update(self):

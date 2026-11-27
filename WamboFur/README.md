@@ -33,8 +33,8 @@ e carregue `wamboFur.py` no Plug-in Manager.
 1. Selecione uma malha poligonal → **Wambo Fur ▸ Wambo Fur Editor… ▸ + New Fur**.
 2. O grafo inicial já aparece e o preview é desenhado no viewport (10% da densidade).
 3. Clique num nó para editar parâmetros (painel **Node**). Com **Live** ligado, o viewport atualiza na hora.
-4. Aba **Groom** ▸ *Create Guides on Mesh*. Os nós *Import Guides* + *Guides* são ligados no grafo sozinhos.
-   Depois é só escolher um pincel e pentear.
+4. Aba **Tools** ▸ crie guias com **Add** (uma por clique), **Paint** (pincel) ou *Fill Mesh with Guides*.
+   Os nós *Import Guides* + *Guides* são ligados no grafo sozinhos. Depois é só pentear com os pincéis.
 5. Aba **Render** ▸ escolha **Arnold** ou **V-Ray** ▸ *Export Current Frame* (ou *Export Sequence* para animação).
 
 ### Atalhos do grafo
@@ -74,22 +74,37 @@ Selecionar um nó e criar outro faz a ligação automática em sequência.
 Todos os nós com perfil têm **Root Weight / Tip Weight / Profile Bias**, que controlam o efeito ao longo do fio.
 A aleatoriedade é por fio e estável: o preview a 10% mostra exatamente os mesmos fios que o render, só que menos.
 
-## Pincéis de groom
+## Groom: guias nativas (aba Tools)
 
-**Comb, Length, Smooth, Puff, Straighten, Move, Cut, Add, Remove**, com raio (pixels), força e *Preserve length*.
+As guias **não são curvas do Maya**. Elas ficam dentro de um nó próprio, o **`wamboFurGroom`**:
+são salvas na cena, desenhadas no viewport com degradê da raiz à ponta e penteadas diretamente,
+sem nenhuma conversão para spline. Cada guia fica presa à malha (triângulo + coordenada baricêntrica
++ referencial local), então **acompanha deformação e skin** na animação.
 
-- Um **círculo segue o mouse no viewport** e mostra a área do pincel. A cor muda conforme o modo,
-  o anel tracejado indica a força e o nome do pincel aparece embaixo.
-- **B + arrastar com o botão esquerdo**: muda o raio. **B + arrastar com o botão do meio**: muda a força
-  (igual aos pincéis do Maya).
-- **Shift**: suaviza temporariamente. **Ctrl**: inverte (Length encurta, Puff deita os fios).
-- **Live fur while brushing**: o pelo final atualiza *durante* a pincelada, quando a avaliação é rápida.
-  Para grooms pesados, baixe o *Preview %*.
-- Cada pincelada é **um passo de undo** (Ctrl+Z), registrado por um comando nativo, sem custo extra.
+![Aba Tools](docs/tools_tab.png)
 
-Também estão no menu Wambo Fur.
+| Grupo | Ferramenta | O que faz |
+|---|---|---|
+| Create | **Add** | um clique na malha = **uma guia** (herda o penteado das vizinhas) |
+| Create | **Paint** | arraste na malha para **espalhar guias** com o pincel (Strength = quantidade, *Paint Spacing* = distância mínima) |
+| Delete | **Delete** | apaga as guias com a raiz dentro do círculo |
+| Shape | **Comb** | penteia na direção do movimento, preservando o comprimento |
+| Shape | **Move** | move livremente os pontos dentro do pincel |
+| Shape | **Smooth** | suaviza dobras (ou **Shift** com qualquer ferramenta) |
+| Shape | **Puff** | levanta na direção da normal (**Ctrl**: deita os fios) |
+| Shape | **Straighten** | endireita as guias |
+| Shape | **Clump** | junta as pontas (**Ctrl**: separa) |
+| Length | **Scale** | arraste para a direita aumenta, para a esquerda diminui (**Ctrl**: encurta) |
+| Length | **Cut** | corta onde o pincel passa |
 
-![Aba Groom](docs/groom_tab.png)
+- **Círculo do pincel** no viewport. **B + arrastar (esquerdo)**: raio. **B + arrastar (meio)**: força.
+- **Front guides only**: o pincel ignora as guias do lado de trás da malha.
+- **Fill Mesh with Guides / Add to Groom**: espalha N guias retas na malha inteira.
+- **Guide Operations**: Smooth All, Straighten All, Scale All, Resample, Clear All, Select Groom.
+- **Curves → Groom** converte curvas do Maya (ou as guias de curva da v1.0/1.1) em guias nativas.
+  **Groom → Curves** gera curvas a partir das guias (por exemplo, para simulação).
+- Cada pincelada e cada operação é **um passo de undo** (Ctrl+Z).
+- **Live fur while brushing**: o pelo final atualiza durante a pincelada.
 
 ## Renderização
 
@@ -130,7 +145,7 @@ cmds.wamboFur(update=True)                       # atualiza previews
 ## Animação
 Marque **Follow Time** para reavaliar a cada frame (malhas deformadas). As raízes ficam presas por
 triângulo + baricêntrica, então os fios acompanham a deformação. Para render, use *Export Sequence*.
-As guias são curvas estáticas: em personagens animados, penteie na pose de rest.
+As guias nativas ficam presas à malha e acompanham a deformação. O ideal é pentear na pose de rest.
 
 ## Estrutura
 ```
@@ -155,4 +170,4 @@ WamboFur/
   Para milhões de fios, o próximo passo seria portar os nós para C++.
 - Ainda não há: nós de penas/instanciamento de geometria, rampas gráficas por atributo, nem cache próprio
   no formato do sistema.
-- O pincel de groom funciona sobre as curvas-guia (não diretamente sobre os fios finais).
+- Os pincéis atuam nas guias (como no Yeti); os fios finais seguem as guias pelo nó *Guides*.

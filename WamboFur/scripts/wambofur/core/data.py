@@ -18,8 +18,11 @@ class Surface(object):
     tri_uvs   : [((u,v),(u,v),(u,v))] per-triangle-corner UVs, or None
     """
 
-    def __init__(self, points, triangles, normals=None, tri_uvs=None, name="", rest_points=None):
+    def __init__(self, points, triangles, normals=None, tri_uvs=None, name="", rest_points=None,
+                 face_tri_start=None):
         self.name = name
+        # face_tri_start[f]..face_tri_start[f+1]: triangles of polygon f (Maya meshes)
+        self.face_tri_start = face_tri_start
         self.points = points
         # rest pose (undeformed) positions: used for area weighting so that
         # roots stay on the same triangles while the mesh deforms
@@ -29,6 +32,11 @@ class Surface(object):
         self.normals = normals or self._compute_normals()
         self._cum = None
         self._tangents = {}
+
+    def face_tris(self, face):
+        if not self.face_tri_start or face is None or face < 0 or face + 1 >= len(self.face_tri_start):
+            return None
+        return range(self.face_tri_start[face], self.face_tri_start[face + 1])
 
     def _compute_normals(self):
         acc = [[0.0, 0.0, 0.0] for _ in self.points]

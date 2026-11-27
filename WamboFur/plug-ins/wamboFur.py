@@ -7,6 +7,7 @@ Registers
   wamboFur               command (editor / update / export / render-time export)
   wamboFurGroomEdit      internal undoable command used by the groom brushes
   wamboFurBrushCursor    locator drawn in Viewport 2.0 (brush circle)
+  wamboFurGroom          native groom guides (stored in the scene, drawn in VP2)
 """
 import sys
 import os
@@ -23,7 +24,7 @@ if _here and os.path.isdir(_scripts) and _scripts not in sys.path:
     sys.path.append(_scripts)
 
 VENDOR = "Wambo"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 
 def maya_useNewAPI():
@@ -85,7 +86,7 @@ class WamboFurCmd(om.MPxCommand):
 # =========================================================================
 class GroomEditCmd(om.MPxCommand):
     """Takes the stroke prepared by wambofur.maya.brushes (PENDING) and makes
-    it undoable. The new CV positions are already applied when it runs."""
+    it undoable. The new groom state is already applied when it runs."""
     NAME = "wamboFurGroomEdit"
 
     def __init__(self):
@@ -238,6 +239,153 @@ class BrushCursorOverride(omr.MPxDrawOverride):
 
 
 # =========================================================================
+# groom node: guides stored natively (no Maya curves), drawn in VP2
+# =========================================================================
+class GroomNode(omui.MPxLocatorNode):
+    NAME = "wamboFurGroom"
+    ID = om.MTypeId(0x0007F7A2)          # local/testing range
+    DRAW_CLASSIFICATION = "drawdb/geometry/wamboFurGroom"
+    DRAW_REGISTRANT = "wamboFurGroomOverride"
+
+    @staticmethod
+    def creator():
+        return GroomNode()
+
+    @staticmethod
+    def initialize():
+        tf = om.MFnTypedAttribute()
+        nf = om.MFnNumericAttribute()
+        attrs = []
+        a = tf.create("inMesh", "inm", om.MFnData.kMesh)
+        tf.storable = False
+        tf.hidden = True
+        attrs.append(a)
+        a = tf.create("meshName", "msn", om.MFnData.kString)
+        attrs.append(a)
+        for ln, sn, kind in (("guidePoints", "gpt", om.MFnData.kDoubleArray),
+                             ("guideCounts", "gct", om.MFnData.kIntArray),
+                             ("guideTris", "gtr", om.MFnData.kIntArray),
+                             ("guideBary", "gby", om.MFnData.kDoubleArray),
+                             ("guideFrames", "gfr", om.MFnData.kDoubleArray)):
+            a = tf.create(ln, sn, kind)
+            tf.storable = True
+            tf.hidden = True
+            attrs.append(a)
+        a = nf.createColor("rootColor", "rcl")
+        nf.default = (0.15, 0.45, 0.95)
+        attrs.append(a)
+        a = nf.createColor("tipColor", "tcl")
+        nf.default = (0.35, 0.95, 1.0)
+        attrs.append(a)
+        a = nf.create("showRoots", "shr", om.MFnNumericData.kBoolean, True)
+        attrs.append(a)
+        a = nf.create("lineWidth", "lwd", om.MFnNumericData.kFloat, 1.5)
+        nf.setMin(1.0)
+        nf.setMax(6.0)
+        attrs.append(a)
+        for a in attrs:
+            om.MPxNode.addAttribute(a)
+
+
+def _array(plug, fn_cls):
+    try:
+        obj = plug.asMObject()
+    except RuntimeError:
+        return []
+    if obj.isNull():
+        return []
+    return fn_cls(obj).array()
+
+
+class _GroomData(om.MUserData):
+    def __init__(self):
+        try:
+            om.MUserData.__init__(self, False)
+        except TypeError:
+            om.MUserData.__init__(self)
+        self.lines = om.MPointArray()
+        self.colors = om.MColorArray()
+        self.roots = om.MPointArray()
+        self.show_roots = True
+        self.width = 1.5
+        self.active = False
+
+
+class GroomOverride(omr.MPxDrawOverride):
+    @staticmethod
+    def creator(obj):
+        return GroomOverride(obj)
+
+    def __init__(self, obj):
+        # not always dirty: redrawn only when the groom changes (fast tumbling)
+        omr.MPxDrawOverride.__init__(self, obj, None, False)
+
+    def supportedDrawAPIs(self):
+        return omr.MRenderer.kAllDevices
+
+    def isBounded(self, objPath, cameraPath):
+        return False
+
+    def hasUIDrawables(self):
+        return True
+
+    def prepareForDraw(self, objPath, cameraPath, frameContext, oldData):
+        data = oldData if isinstance(oldData, _GroomData) else _GroomData()
+        fn = om.MFnDependencyNode(objPath.node())
+        pts = _array(fn.findPlug("guidePoints", False), om.MFnDoubleArrayData)
+        counts = _array(fn.findPlug("guideCounts", False), om.MFnIntArrayData)
+
+        def col(name):
+            p = fn.findPlug(name, False)
+            return [p.child(i).asFloat() for i in range(3)]
+        rc, tc = col("rootColor"), col("tipColor")
+        status = omr.MGeometryUtilities.displayStatus(objPath)
+        data.active = status in (omr.MGeometryUtilities.kLead, omr.MGeometryUtilities.kActive)
+        if data.active:
+            tc = [min(1.0, c * 0.5 + 0.5) for c in tc]
+        data.show_roots = fn.findPlug("showRoots", False).asBool()
+        data.width = fn.findPlug("lineWidth", False).asFloat()
+        lines, colors, roots = om.MPointArray(), om.MColorArray(), om.MPointArray()
+        i = 0
+        cache = {}
+        for n in counts:
+            if i + 3 * n > len(pts):
+                break
+            gp = [om.MPoint(pts[i + 3 * k], pts[i + 3 * k + 1], pts[i + 3 * k + 2]) for k in range(n)]
+            i += 3 * n
+            if not gp:
+                continue
+            roots.append(gp[0])
+            grad = cache.get(n)
+            if grad is None:
+                grad = []
+                for k in range(n):
+                    t = k / float(max(n - 1, 1))
+                    grad.append(om.MColor((rc[0] + (tc[0] - rc[0]) * t, rc[1] + (tc[1] - rc[1]) * t,
+                                           rc[2] + (tc[2] - rc[2]) * t, 1.0)))
+                cache[n] = grad
+            for k in range(n - 1):
+                lines.append(gp[k])
+                lines.append(gp[k + 1])
+                colors.append(grad[k])
+                colors.append(grad[k + 1])
+        data.lines, data.colors, data.roots = lines, colors, roots
+        return data
+
+    def addUIDrawables(self, objPath, dm, frameContext, data):
+        if not isinstance(data, _GroomData) or len(data.lines) == 0:
+            return
+        dm.beginDrawable()
+        dm.setLineWidth(data.width + (0.5 if data.active else 0.0))
+        dm.mesh(omr.MUIDrawManager.kLines, data.lines, None, data.colors)
+        if data.show_roots and len(data.roots):
+            dm.setColor(om.MColor((0.1, 0.25, 0.6, 1.0)))
+            dm.setPointSize(3.0)
+            dm.points(data.roots, False)
+        dm.endDrawable()
+
+
+# =========================================================================
 def initializePlugin(obj):
     plugin = om.MFnPlugin(obj, VENDOR, VERSION, "Any")
     plugin.registerCommand(WamboFurCmd.NAME, WamboFurCmd.creator, WamboFurCmd.syntax)
@@ -248,6 +396,10 @@ def initializePlugin(obj):
     omr.MDrawRegistry.registerDrawOverrideCreator(BrushCursorNode.DRAW_CLASSIFICATION,
                                                   BrushCursorNode.DRAW_REGISTRANT,
                                                   BrushCursorOverride.creator)
+    plugin.registerNode(GroomNode.NAME, GroomNode.ID, GroomNode.creator, GroomNode.initialize,
+                        om.MPxNode.kLocatorNode, GroomNode.DRAW_CLASSIFICATION)
+    omr.MDrawRegistry.registerDrawOverrideCreator(GroomNode.DRAW_CLASSIFICATION,
+                                                  GroomNode.DRAW_REGISTRANT, GroomOverride.creator)
     if om.MGlobal.mayaState() != om.MGlobal.kBatch:
         from wambofur.maya import menu
         cmds.evalDeferred(menu.create)
@@ -263,6 +415,9 @@ def uninitializePlugin(obj):
     omr.MDrawRegistry.deregisterDrawOverrideCreator(BrushCursorNode.DRAW_CLASSIFICATION,
                                                     BrushCursorNode.DRAW_REGISTRANT)
     plugin.deregisterNode(BrushCursorNode.ID)
+    omr.MDrawRegistry.deregisterDrawOverrideCreator(GroomNode.DRAW_CLASSIFICATION,
+                                                    GroomNode.DRAW_REGISTRANT)
+    plugin.deregisterNode(GroomNode.ID)
     plugin.deregisterCommand(GroomEditCmd.NAME)
     plugin.deregisterCommand(WamboFurCmd.NAME)
     try:

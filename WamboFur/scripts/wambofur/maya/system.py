@@ -7,7 +7,6 @@ settings, owns the viewport preview curves and points at its guide group.
     wamboFur1_guides         (groomable guide curves, edited with the brushes)
 """
 import json
-import random
 import time
 
 import maya.cmds as cmds
@@ -15,7 +14,6 @@ import maya.api.OpenMaya as om
 
 from ..core.graph import Graph, EvalContext, default_graph
 from ..core.data import EvalError
-from ..core.mathutil import v_madd
 from . import scene
 
 SYSTEM_ATTR = "wfSystem"
@@ -170,37 +168,46 @@ class FurSystem(object):
         return data
 
     # ------------------------------------------------------------- guides
-    def guides_group(self):
-        name = self.name + "_guides"
-        return name if cmds.objExists(name) else None
-
-    def create_guides(self, count=150, length=1.0, segments=6, seed=1):
-        """Scatter straight guide curves on the system's mesh and wire them
-        into the graph (Import Guides -> Guides node after Grow)."""
+    def mesh(self):
         graph = self.load_graph()
         imp = next((n for n in graph.nodes.values() if n.type_name == "import_geo"), None)
         if imp is None or not imp.params["geometry"]:
             raise EvalError("the graph has no Import Geometry node with a mesh")
-        mesh = imp.params["geometry"]
-        surf = scene.read_surface(mesh)
-        rng = random.Random(seed)
-        segments = max(3, int(segments))
-        grp = self.guides_group()
-        if grp:
-            cmds.delete(grp)
-        grp = cmds.createNode("transform", name=self.name + "_guides")
-        cmds.addAttr(grp, longName=GUIDE_MESH_ATTR, dataType="string")
-        cmds.setAttr(grp + "." + GUIDE_MESH_ATTR, mesh, type="string")
-        for i, smp in enumerate(surf.random_samples(int(count), rng)):
-            pos, nrm, uv, tan = surf.sample(*smp)
-            pts = [v_madd(pos, nrm, length * k / float(segments)) for k in range(segments + 1)]
-            crv = cmds.curve(degree=3 if segments >= 3 else 1, point=pts, name="wfGuide%d" % (i + 1))
-            cmds.parent(crv, grp)
-        cmds.setAttr(grp + ".overrideEnabled", 1)
-        cmds.setAttr(grp + ".overrideRGBColors", 1)
-        cmds.setAttr(grp + ".overrideColorRGB", 0.2, 0.85, 1.0)
-        self.wire_guides(grp, graph)
-        return grp
+        return imp.params["geometry"]
+
+    def groom(self, create=False):
+        """Native groom shape of this system (created on demand)."""
+        from . import groom
+        name = self.name + "_groom"
+        shape = groom.groom_shape(name)
+        if shape is None and create:
+            shape = groom.create_node(name, self.mesh())
+            self.wire_guides(cmds.listRelatives(shape, parent=True)[0])
+        return shape
+
+    def guides_group(self):
+        """Groom node (preferred) or a legacy curve group."""
+        shape = self.groom()
+        if shape:
+            return cmds.listRelatives(shape, parent=True, fullPath=True)[0]
+        name = self.name + "_guides"
+        return name if cmds.objExists(name) else None
+
+    def legacy_curve_group(self):
+        name = self.name + "_guides"
+        return name if cmds.objExists(name) and not cmds.listRelatives(
+            name, shapes=True, type="wamboFurGroom") else None
+
+    def create_guides(self, count=150, length=1.0, segments=6, seed=1, replace=True):
+        """Scatter straight guides on the mesh into the native groom node."""
+        from . import groom
+        shape = self.groom(create=True)
+        surf = scene.read_surface(self.mesh())
+        new = groom.straight_guides(surf, count, length, max(2, int(segments)), seed)
+        before = groom.snapshot(shape)
+        groom.write(shape, new if replace else groom.read(shape) + new)
+        _push_groom_undo(shape, before)
+        return cmds.listRelatives(shape, parent=True, fullPath=True)[0]
 
     def wire_guides(self, group, graph=None):
         graph = graph or self.load_graph()
@@ -222,8 +229,17 @@ class FurSystem(object):
         return graph
 
     def delete(self):
-        g = self.guides_group()
-        cmds.delete([n for n in (self.name, g) if n])
+        nodes = [self.name, self.guides_group(), self.legacy_curve_group()]
+        cmds.delete([n for n in nodes if n and cmds.objExists(n)])
+
+
+def _push_groom_undo(shape, before):
+    """Register a groom change (already applied) as one undo step."""
+    from . import groom, brushes
+    after = groom.snapshot(shape)
+    if cmds.pluginInfo("wamboFur", q=True, loaded=True):
+        brushes.push_pending([(shape, before, after)])
+        cmds.wamboFurGroomEdit()
 
 
 _PREVIEW = {}   # system name -> {"sig": ..., "handles": [MObjectHandle]}

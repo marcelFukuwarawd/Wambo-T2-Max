@@ -24,7 +24,7 @@ def mesh_shape(name):
     return shapes[0] if shapes else None
 
 
-_TOPO = {}   # mesh shape -> (signature, triangles, tri_uvs, rest_points)
+_TOPO = {}   # mesh shape -> (signature, triangles, tri_uvs, rest_points, face_tri_start)
 
 
 def clear_cache():
@@ -42,11 +42,12 @@ def read_surface(name):
     cached = _TOPO.get(shape)
     if cached and cached[0] == sig:
         # topology / UVs unchanged: only positions and normals are re-read
-        return Surface(points, cached[1], normals, cached[2], name=name, rest_points=cached[3])
-    triangles, tri_uvs = _read_topology(fn)
+        return Surface(points, cached[1], normals, cached[2], name=name, rest_points=cached[3],
+                       face_tri_start=cached[4])
+    triangles, tri_uvs, starts = _read_topology(fn)
     rest = read_rest_points(shape, len(points))
-    _TOPO[shape] = (sig, triangles, tri_uvs, rest)
-    return Surface(points, triangles, normals, tri_uvs, name=name, rest_points=rest)
+    _TOPO[shape] = (sig, triangles, tri_uvs, rest, starts)
+    return Surface(points, triangles, normals, tri_uvs, name=name, rest_points=rest, face_tri_start=starts)
 
 
 def _read_topology(fn):
@@ -61,6 +62,7 @@ def _read_topology(fn):
         uvcounts, uvids = fn.getAssignedUVs()
         uvcounts, uvids = list(uvcounts), list(uvids)
     triangles, tri_uvs = [], []
+    starts = [0]
     tv = 0      # cursor into tri_verts
     fv = 0      # cursor into face-vertex arrays
     for f in range(len(vcounts)):
@@ -81,7 +83,8 @@ def _read_topology(fn):
                 else:
                     tri_uvs.append(((0.0, 0.0), (0.0, 0.0), (0.0, 0.0)))
         fv += nv
-    return triangles, (tri_uvs if has_uv else None)
+        starts.append(len(triangles))
+    return triangles, (tri_uvs if has_uv else None), starts
 
 
 def read_rest_points(shape, count):
@@ -122,6 +125,17 @@ def read_curve(shape, samples):
 
 
 def read_guides(name, samples):
+    from . import groom
+    from ..core.guides import deform_guides
+    from ..core.mathutil import resample
+    gshape = groom.groom_shape(name)
+    if gshape:
+        guides = groom.read(gshape)
+        if not guides:
+            raise EvalError("groom '%s' has no guides" % name)
+        mesh = groom.mesh_of(gshape)
+        polys = deform_guides(guides, read_surface(mesh)) if mesh else [g.pts for g in guides]
+        return [resample(p, samples) for p in polys]
     shapes = curve_shapes(name)
     if not shapes:
         raise EvalError("no curves under '%s'" % name)
@@ -173,7 +187,8 @@ def selected(kind):
     for s in sel:
         if kind == "mesh" and mesh_shape(s):
             return s.split(".")[0]
-        if kind == "curves" and curve_shapes(s):
+        if kind == "curves" and (curve_shapes(s) or cmds.nodeType(s) == "wamboFurGroom" or
+                                 cmds.listRelatives(s, shapes=True, type="wamboFurGroom")):
             return s
         if kind == "texture":
             cls = cmds.getClassification(cmds.nodeType(s)) or [""]

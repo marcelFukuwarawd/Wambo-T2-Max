@@ -16,7 +16,7 @@ def _install():
         os.makedirs(mod_dir)
     mod_path = os.path.join(mod_dir, "WamboFur.mod")
     with open(mod_path, "w") as f:
-        f.write("+ WamboFur 1.1.0 %s\n" % root)
+        f.write("+ WamboFur 1.2.0 %s\n" % root)
         f.write("MAYA_PLUG_IN_PATH +:= plug-ins\n")
         f.write("PYTHONPATH +:= scripts\n")
         f.write("XBMLANGPATH +:= icons\n")

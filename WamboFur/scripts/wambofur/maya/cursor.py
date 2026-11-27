@@ -20,7 +20,13 @@ MODE_COLORS = {
     "comb": (1.0, 0.66, 0.23), "length": (0.37, 0.77, 0.94), "smooth": (0.55, 0.9, 0.55),
     "puff": (0.85, 0.6, 1.0), "cut": (1.0, 0.36, 0.36), "add": (0.5, 1.0, 0.6),
     "remove": (1.0, 0.45, 0.45), "straighten": (0.95, 0.95, 0.6), "move": (1.0, 0.85, 0.4),
+    "paint": (0.4, 1.0, 0.55), "clump": (0.95, 0.55, 0.85),
 }
+
+
+def _label(mode):
+    from .brushes import LABELS
+    return LABELS.get(mode, mode).upper()
 
 
 class _Plugs(object):
@@ -131,7 +137,7 @@ class BrushCursor(QtCore.QObject):
             return
         self.plugs.set(radius=self.state.radius, strength=self.state.strength,
                        cursorColor=MODE_COLORS.get(self.state.mode, (1.0, 0.66, 0.23)),
-                       label=self.state.mode.upper())
+                       label=_label(self.state.mode))
         self._refresh()
 
     def set_pressed(self, on):
