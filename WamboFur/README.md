@@ -97,7 +97,10 @@ sem nenhuma conversão para spline. Cada guia fica presa à malha (triângulo + 
 | Length | **Scale** | arraste para a direita aumenta, para a esquerda diminui (**Ctrl**: encurta) |
 | Length | **Cut** | corta onde o pincel passa |
 
-- **Círculo do pincel** no viewport. **B + arrastar (esquerdo)**: raio. **B + arrastar (meio)**: força.
+- **Círculo do pincel** no viewport, desenhado pela ferramenta nativa do Maya (MPxContext). Ele segue
+  o mouse e mostra o nome do pincel, com um anel tracejado indicando a força.
+- **B + arrastar (esquerdo)**: tamanho do pincel. **B + arrastar (meio)**: força. **`[` / `]`**: diminui/aumenta.
+  Funciona igual aos pincéis do Maya. Fora da ferramenta de groom, o **B** continua sendo o Soft Select.
 - **Front guides only**: o pincel ignora as guias do lado de trás da malha.
 - **Fill Mesh with Guides / Add to Groom**: espalha N guias retas na malha inteira.
 - **Guide Operations**: Smooth All, Straighten All, Scale All, Resample, Clear All, Select Groom.

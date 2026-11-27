@@ -26,7 +26,7 @@ from ..core.mathutil import (v_sub, v_add, v_scale, v_lerp, v_madd, v_norm, v_do
 from ..core.spatial import HashGrid
 from . import scene, groom
 
-CONTEXT = "wamboFurGroomCtx"
+CONTEXT = "wamboFurGroomTool"     # tool instance created by the wamboFurGroomCtx command
 MODES = ("add", "paint", "remove", "comb", "move", "smooth", "puff", "straighten", "clump",
          "length", "cut")
 LABELS = {"add": "Add Guide", "paint": "Paint Guides", "remove": "Delete", "comb": "Comb",
@@ -55,7 +55,6 @@ class BrushState(object):
         self.items = []
         self.before = None
         self.last = None
-        self.cursor = None
         self.last_live = 0.0
         self.changed = False
 
@@ -167,10 +166,7 @@ def _falloff(d, r):
 
 
 def _modifier():
-    try:
-        return cmds.draggerContext(CONTEXT, query=True, modifier=True) or "none"
-    except RuntimeError:
-        return "none"
+    return getattr(STATE, "mods", "none") or "none"
 
 
 # ---------------------------------------------------------------- undo
@@ -303,9 +299,12 @@ def _surface_point(view, sx, sy):
 
 
 # ---------------------------------------------------------------- strokes
-def _press():
+# Called by the native tool context (wamboFurGroomContext in the plug-in),
+# which also draws the brush circle. x, y are viewport pixel coordinates.
+def press(x, y, mods="none"):
+    STATE.mods = mods
     try:
-        _press_impl()
+        _press_impl(float(x), float(y))
     except Exception as e:
         STATE.last = None
         import traceback
@@ -313,14 +312,30 @@ def _press():
         cmds.warning("Wambo Fur brush: %s" % e)
 
 
-def _press_impl():
+def drag(x, y, mods="none"):
+    STATE.mods = mods
+    try:
+        _drag_impl(float(x), float(y))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        cmds.warning("Wambo Fur brush: %s" % e)
+
+
+def release():
+    try:
+        _release_impl()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        cmds.warning("Wambo Fur brush: %s" % e)
+
+
+def _press_impl(x, y):
     if not STATE.group or not groom.groom_shape(STATE.group):
         cmds.warning("Wambo Fur: no groom - create guides first (Tools tab)")
         return
-    x, y, _ = cmds.draggerContext(CONTEXT, query=True, anchorPoint=True)
-    STATE.last = (float(x), float(y))
-    if STATE.cursor:
-        STATE.cursor.set_pressed(True)
+    STATE.last = (x, y)
     view = _view()
     _begin(view)
     STATE.last_live = time.time()
@@ -331,8 +346,7 @@ def _press_impl():
             STATE.accel = STATE.mesh_fn.autoUniformGridParams()
         except Exception:
             STATE.mesh_fn, STATE.accel = None, None
-        n = _paint(view, *STATE.last) if STATE.mode == "paint" else \
-            (1 if _new_guide_at(view, *STATE.last) else 0)
+        n = _paint(view, x, y) if STATE.mode == "paint" else (1 if _new_guide_at(view, x, y) else 0)
         if n:
             _flush()
             view.refresh(False, False)
@@ -341,13 +355,10 @@ def _press_impl():
         _apply(view, STATE.last, STATE.last)
 
 
-def _drag():
+def _drag_impl(x, y):
     if STATE.last is None or STATE.mode == "add":
         return
-    x, y, _ = cmds.draggerContext(CONTEXT, query=True, dragPoint=True)
-    cur = (float(x), float(y))
-    if STATE.cursor and STATE.cursor.plugs:
-        STATE.cursor.plugs.set(cursorX=cur[0], cursorY=cur[1], active=True)
+    cur = (x, y)
     view = _view()
     if STATE.mode == "paint":
         if math.hypot(cur[0] - STATE.last[0], cur[1] - STATE.last[1]) < STATE.radius * 0.25:
@@ -357,7 +368,8 @@ def _drag():
     else:
         _apply(view, STATE.last, cur)
     STATE.last = cur
-    view.refresh(False, False)
+    if STATE.changed:
+        view.refresh(False, False)
     now = time.time()
     if STATE.changed and STATE.on_stroke and now - STATE.last_live > STATE.live_interval:
         STATE.last_live = now
@@ -367,9 +379,9 @@ def _drag():
             cmds.warning("Wambo Fur: %s" % e)
 
 
-def _release():
-    if STATE.cursor:
-        STATE.cursor.set_pressed(False)
+def _release_impl():
+    if STATE.last is None and not STATE.changed:
+        return
     if STATE.changed and STATE.shape:
         after = groom.snapshot(STATE.shape)
         push_pending([(STATE.shape, STATE.before, after)])
@@ -379,6 +391,7 @@ def _release():
             take_pending()
     STATE.items, STATE.guides, STATE.last = [], [], None
     STATE.surface = None
+    STATE.changed = False
     if STATE.on_stroke:
         try:
             STATE.on_stroke(STATE.group, True)
@@ -560,44 +573,45 @@ def scale_all(factor):
 
 # ---------------------------------------------------------------- public
 def activate(mode, group, on_stroke=None, on_settings=None):
-    from .cursor import BrushCursor
     if mode not in MODES:
         raise ValueError(mode)
     STATE.mode = mode
     STATE.group = group
     STATE.on_stroke = on_stroke
     STATE.on_settings = on_settings
-    if cmds.draggerContext(CONTEXT, exists=True):
-        cmds.deleteUI(CONTEXT)
-    cmds.draggerContext(CONTEXT, pressCommand=_press, dragCommand=_drag, releaseCommand=_release,
-                        cursor="crossHair", space="screen", undoMode="sequence", name=CONTEXT)
+    if not cmds.pluginInfo("wamboFur", q=True, loaded=True):
+        cmds.loadPlugin("wamboFur", quiet=True)
+    if not cmds.contextInfo(CONTEXT, exists=True):
+        cmds.wamboFurGroomCtx(CONTEXT)
     cmds.setToolTo(CONTEXT)
-    if STATE.cursor is None:
-        STATE.cursor = BrushCursor(STATE)
-        if not STATE.cursor.start():
-            STATE.cursor = None
-    else:
-        STATE.cursor.sync_style()
-    cmds.scriptJob(event=["ToolChanged", _on_tool_changed], runOnce=True)
-    cmds.inViewMessage(amg="Wambo Fur: <hl>%s</hl>  ·  B+drag radius  ·  Shift smooth  ·  "
-                           "Ctrl invert" % LABELS.get(mode, mode), pos="topCenter", fade=True)
-
-
-def _on_tool_changed():
-    if cmds.currentCtx() != CONTEXT:
-        deactivate(silent=True)
-    else:
-        cmds.scriptJob(event=["ToolChanged", _on_tool_changed], runOnce=True)
+    refresh_view()
+    cmds.inViewMessage(amg="Wambo Fur: <hl>%s</hl>  \u00b7  B+drag: size  \u00b7  B+middle-drag: strength  "
+                           "\u00b7  Shift smooth  \u00b7  Ctrl invert" % LABELS.get(mode, mode),
+                       pos="topCenter", fade=True)
 
 
 def sync_settings():
-    if STATE.cursor:
-        STATE.cursor.sync_style()
+    """Radius / strength / mode changed in the UI: redraw the circle."""
+    refresh_view()
+
+
+def settings_changed():
+    """Radius / strength changed in the viewport (B+drag, [ ]): tell the UI."""
+    refresh_view()
+    if STATE.on_settings:
+        try:
+            STATE.on_settings()
+        except Exception:
+            pass
+
+
+def refresh_view():
+    try:
+        _view().refresh(False, True)
+    except Exception:
+        pass
 
 
 def deactivate(silent=False):
-    if STATE.cursor is not None:
-        STATE.cursor.stop()
-        STATE.cursor = None
     if not silent and cmds.currentCtx() == CONTEXT:
         cmds.setToolTo("selectSuperContext")

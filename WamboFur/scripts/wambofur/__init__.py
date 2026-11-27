@@ -8,5 +8,5 @@ maya/  Maya integration: scene I/O, fur system nodes, groom brushes, menu.
 ui/    Qt (PySide2 / PySide6) node-graph editor and tool windows.
 """
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 VENDOR = "Wambo"
