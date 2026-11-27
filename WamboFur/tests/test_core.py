@@ -124,6 +124,14 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([s.tri for s in s1], [s.tri for s in s2])
         self.assertEqual([s.bary for s in s1], [s.bary for s in s2])
 
+    def test_empty_guides_pass_through(self):
+        class Empty(Resolver):
+            def get_guides(self, name, samples):
+                return []
+        g = default_graph("plane", "groom")
+        res = g.evaluate(g.find("Guides").id, EvalContext(0.01, Empty()))
+        self.assertEqual(len(res.strands), 200)
+
     def test_cycle_rejected(self):
         g = Graph()
         a = g.add_node("noise"); b = g.add_node("curl")

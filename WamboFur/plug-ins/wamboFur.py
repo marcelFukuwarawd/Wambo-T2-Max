@@ -24,7 +24,7 @@ if _here and os.path.isdir(_scripts) and _scripts not in sys.path:
     sys.path.append(_scripts)
 
 VENDOR = "Wambo"
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 
 def maya_useNewAPI():
@@ -267,7 +267,12 @@ class GroomNode(omui.MPxLocatorNode):
                              ("guideTris", "gtr", om.MFnData.kIntArray),
                              ("guideBary", "gby", om.MFnData.kDoubleArray),
                              ("guideFrames", "gfr", om.MFnData.kDoubleArray)):
-            a = tf.create(ln, sn, kind)
+            # default = empty array, so a fresh node always has valid data
+            if kind == om.MFnData.kIntArray:
+                empty = om.MFnIntArrayData().create(om.MIntArray())
+            else:
+                empty = om.MFnDoubleArrayData().create(om.MDoubleArray())
+            a = tf.create(ln, sn, kind, empty)
             tf.storable = True
             tf.hidden = True
             attrs.append(a)
@@ -290,11 +295,11 @@ class GroomNode(omui.MPxLocatorNode):
 def _array(plug, fn_cls):
     try:
         obj = plug.asMObject()
+        if obj.isNull():
+            return []
+        return fn_cls(obj).array()
     except RuntimeError:
         return []
-    if obj.isNull():
-        return []
-    return fn_cls(obj).array()
 
 
 class _GroomData(om.MUserData):

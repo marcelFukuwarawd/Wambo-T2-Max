@@ -139,9 +139,7 @@ class ImportGuides(Operator):
                 continue
             d = v_norm(v_sub(pts[1], pts[0]))
             guides.append(Strand(list(pts), normal=d, tangent=perpendicular(d), sid=i))
-        if not guides:
-            raise EvalError("no guide curves found")
-        return FurData(guides=guides)
+        return FurData(guides=guides)   # may be empty: Guides node then passes through
 
 
 # --------------------------------------------------------------------------
@@ -240,7 +238,8 @@ class GuideShape(Operator):
         gsrc = _first(inputs, 1, what="guides")
         guides = gsrc.guides or gsrc.strands
         if not guides:
-            raise EvalError("guide input has no guides")
+            # empty groom (e.g. right after creating it): leave strands untouched
+            return FurData(src.surface, list(src.strands), src.guides)
         radius = float(prm["radius"])
         kmax = max(1, int(prm["max_guides"]))
         weight = float(prm["weight"])

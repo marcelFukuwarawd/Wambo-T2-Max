@@ -80,6 +80,9 @@ class BrushCursor(QtCore.QObject):
                 for n in (tr, NODE_NAME):
                     cmds.setAttr(n + ".hiddenInOutliner", True)
                 cmds.setAttr(tr + ".doNotWrite", True)   # never saved with the scene
+                # reference display = never picked by viewport selection clicks
+                cmds.setAttr(tr + ".overrideEnabled", 1)
+                cmds.setAttr(tr + ".overrideDisplayType", 2)
                 if sel:
                     cmds.select(sel)
             finally:

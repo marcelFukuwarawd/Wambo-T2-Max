@@ -38,10 +38,18 @@ def _fn(shape):
 
 # ------------------------------------------------------------- read/write
 def _get(fn, name, fn_cls):
-    obj = fn.findPlug(name, False).asMObject()
+    # a typed array attribute that was never set has no data object:
+    # Maya raises kFailure on asMObject() - treat it as empty
+    try:
+        obj = fn.findPlug(name, False).asMObject()
+    except RuntimeError:
+        return []
     if obj.isNull():
         return []
-    return list(fn_cls(obj).array())
+    try:
+        return list(fn_cls(obj).array())
+    except RuntimeError:
+        return []
 
 
 def snapshot(shape):

@@ -40,7 +40,7 @@ def read_surface(name):
     normals = [(n.x, n.y, n.z) for n in fn.getVertexNormals(False, om.MSpace.kWorld)]
     sig = (fn.numVertices, fn.numPolygons, fn.numFaceVertices, fn.numUVs())
     cached = _TOPO.get(shape)
-    if cached and cached[0] == sig:
+    if cached and len(cached) == 5 and cached[0] == sig:
         # topology / UVs unchanged: only positions and normals are re-read
         return Surface(points, cached[1], normals, cached[2], name=name, rest_points=cached[3],
                        face_tri_start=cached[4])
@@ -132,7 +132,7 @@ def read_guides(name, samples):
     if gshape:
         guides = groom.read(gshape)
         if not guides:
-            raise EvalError("groom '%s' has no guides" % name)
+            return []
         mesh = groom.mesh_of(gshape)
         polys = deform_guides(guides, read_surface(mesh)) if mesh else [g.pts for g in guides]
         return [resample(p, samples) for p in polys]

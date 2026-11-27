@@ -134,6 +134,23 @@ class _Projector(object):
         return self._slow(p)
 
 
+def _intersect(fn, near, d):
+    """Ray/mesh hit -> (point, face) or None (works across Maya versions)."""
+    src, direc = om.MFloatPoint(*near), om.MFloatVector(*d)
+    accel = getattr(STATE, "accel", None)
+    try:
+        hit = fn.closestIntersection(src, direc, om.MSpace.kWorld, 1e7, False,
+                                     None, None, False, accel)
+    except (TypeError, RuntimeError, ValueError):
+        try:
+            hit = fn.closestIntersection(src, direc, om.MSpace.kWorld, 1e7, False)
+        except RuntimeError:
+            return None
+    if not hit or hit[0] is None or hit[2] is None or hit[2] < 0:
+        return None
+    return (hit[0].x, hit[0].y, hit[0].z), hit[2]
+
+
 def _hit_plane(ray, fwd, p):
     near, d = ray
     den = v_dot(d, fwd)
@@ -233,14 +250,13 @@ def _new_guide_at(view, sx, sy, spacing_grid=None, spacing=0.0):
     near, d = _ray(view, sx, sy)
     fn = STATE.mesh_fn if getattr(STATE, "mesh_fn", None) else om.MFnMesh(scene.dag_path(mshape))
     STATE.mesh_fn = fn
-    hit = fn.closestIntersection(om.MFloatPoint(*near), om.MFloatVector(*d), om.MSpace.kWorld,
-                                 1e7, False, None, None, False, getattr(STATE, "accel", None))
-    if not hit or hit[2] < 0:
+    res = _intersect(fn, near, d)
+    if res is None:
         return None
-    p = (hit[0].x, hit[0].y, hit[0].z)
+    p, face = res
     if spacing_grid is not None and spacing > 0 and spacing_grid.within(p, spacing):
         return None
-    tri, bary = bind_point(surf, p, surf.face_tris(hit[2]))
+    tri, bary = bind_point(surf, p, surf.face_tris(face))
     root, n, _ = tri_frame(surf.points, surf.triangles[tri], bary)
     pts = None
     if STATE.inherit and STATE.guides:
@@ -282,15 +298,22 @@ def _surface_point(view, sx, sy):
     if fn is None:
         return None
     near, d = _ray(view, sx, sy)
-    hit = fn.closestIntersection(om.MFloatPoint(*near), om.MFloatVector(*d), om.MSpace.kWorld,
-                                 1e7, False, None, None, False, getattr(STATE, "accel", None))
-    if not hit or hit[2] < 0:
-        return None
-    return (hit[0].x, hit[0].y, hit[0].z)
+    res = _intersect(fn, near, d)
+    return res[0] if res else None
 
 
 # ---------------------------------------------------------------- strokes
 def _press():
+    try:
+        _press_impl()
+    except Exception as e:
+        STATE.last = None
+        import traceback
+        traceback.print_exc()
+        cmds.warning("Wambo Fur brush: %s" % e)
+
+
+def _press_impl():
     if not STATE.group or not groom.groom_shape(STATE.group):
         cmds.warning("Wambo Fur: no groom - create guides first (Tools tab)")
         return
