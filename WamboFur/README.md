@@ -76,10 +76,31 @@ A aleatoriedade é por fio e estável: o preview a 10% mostra exatamente os mesm
 
 ## Pincéis de groom
 
-**Comb, Length, Smooth, Puff, Cut, Add, Remove**, com raio (pixels), força e *Preserve length*.
-Cada pincelada é **um passo de undo** (Ctrl+Z). Também estão no menu Wambo Fur.
+**Comb, Length, Smooth, Puff, Straighten, Move, Cut, Add, Remove**, com raio (pixels), força e *Preserve length*.
+
+- Um **círculo segue o mouse no viewport** e mostra a área do pincel. A cor muda conforme o modo,
+  o anel tracejado indica a força e o nome do pincel aparece embaixo.
+- **B + arrastar com o botão esquerdo**: muda o raio. **B + arrastar com o botão do meio**: muda a força
+  (igual aos pincéis do Maya).
+- **Shift**: suaviza temporariamente. **Ctrl**: inverte (Length encurta, Puff deita os fios).
+- **Live fur while brushing**: o pelo final atualiza *durante* a pincelada, quando a avaliação é rápida.
+  Para grooms pesados, baixe o *Preview %*.
+- Cada pincelada é **um passo de undo** (Ctrl+Z), registrado por um comando nativo, sem custo extra.
+
+Também estão no menu Wambo Fur.
+
+![Aba Groom](docs/groom_tab.png)
 
 ## Renderização
+
+### Render direto, sem exportar (estilo Yeti)
+Na aba **Render**, marque **Export automatically when rendering**. Isso adiciona um gancho em
+*Render Settings ▸ Common ▸ Render Options ▸ Pre render frame MEL*. A partir daí, cada frame renderizado
+(Render View, batch render ou render farm) gera o pelo daquele frame antes de renderizar.
+É só apertar **Render**, tanto no Arnold quanto no V-Ray.
+Na farm, o plugin precisa estar instalado nas máquinas (o módulo `WamboFur.mod`). O gancho carrega o plugin sozinho.
+
+> O IPR (render interativo) não executa o *Pre render frame MEL*. Nele, use *Export Current Frame* uma vez.
 
 ### Arnold (MtoA)
 `Export` grava `<projeto>/cache/wambofur/<sistema>.ass` com:
@@ -123,9 +144,15 @@ WamboFur/
   tests/                  testes do motor:  python -m unittest discover -s tests
 ```
 
-## Limitações conhecidas (v1.0)
+## Desempenho (v1.1)
+- O preview **reaproveita as curvas existentes** e só move os pontos. Só recria quando muda a quantidade de fios.
+- A topologia e as UVs da malha ficam em cache. O botão **Update** força uma releitura (use depois de modelar).
+- Os pincéis calculam a câmera uma vez por movimento, descartam curvas fora do círculo antes de calcular
+  e gravam o undo com um único comando.
+
+## Limitações conhecidas
 - O motor é Python (com numpy quando disponível). ~30 mil fios levam ~4–5 s na densidade de render.
   Para milhões de fios, o próximo passo seria portar os nós para C++.
-- Ainda não há: nós de penas/instanciamento de geometria, rampas gráficas por atributo, cache próprio
-  no formato do sistema, nem desenho do círculo do pincel no viewport.
+- Ainda não há: nós de penas/instanciamento de geometria, rampas gráficas por atributo, nem cache próprio
+  no formato do sistema.
 - O pincel de groom funciona sobre as curvas-guia (não diretamente sobre os fios finais).

@@ -67,6 +67,8 @@ class FurSystem(object):
         self.name = name
         self.last_stats = {}
         self.last_errors = {}
+        self.last_time = 0.0
+        self.last_draw_time = 0.0
 
     # ------------------------------------------------------------ creation
     @classmethod
@@ -149,13 +151,22 @@ class FurSystem(object):
         Returns the FurData shown."""
         st = self.settings()
         data = self.evaluate(st["preview_density"], graph=graph)
+        smooth = bool(st["preview_smooth"])
+        strands = [s for s in data.strands if len(s.points) >= 2]
+        sig = (tuple(len(s.points) for s in strands), smooth)
+        t0 = time.time()
         with NoUndo():
-            self.clear_preview()
-            node = self.preview_node()
-            build_curves(node, data.strands, smooth=st["preview_smooth"])
-            cmds.setAttr(node + ".overrideEnabled", 1)
-            cmds.setAttr(node + ".overrideRGBColors", 1)
-            cmds.setAttr(node + ".overrideColorRGB", *st["preview_color"])
+            cache = _PREVIEW.get(self.name)
+            if not (cache and cache["sig"] == sig and update_curves(cache, strands)):
+                # topology changed (count / segments): rebuild the shapes
+                self.clear_preview()
+                node = self.preview_node()
+                handles = build_curves(node, strands, smooth=smooth)
+                cmds.setAttr(node + ".overrideEnabled", 1)
+                cmds.setAttr(node + ".overrideRGBColors", 1)
+                cmds.setAttr(node + ".overrideColorRGB", *st["preview_color"])
+                _PREVIEW[self.name] = {"sig": sig, "handles": handles}
+        self.last_draw_time = time.time() - t0
         return data
 
     # ------------------------------------------------------------- guides
@@ -215,12 +226,36 @@ class FurSystem(object):
         cmds.delete([n for n in (self.name, g) if n])
 
 
+_PREVIEW = {}   # system name -> {"sig": ..., "handles": [MObjectHandle]}
+
+
+def update_curves(cache, strands):
+    """Move the CVs of existing preview curves in place (much faster than
+    deleting and re-creating thousands of shapes). False if stale."""
+    handles = cache["handles"]
+    if len(handles) != len(strands):
+        return False
+    if handles and not (handles[0].isValid() and handles[-1].isValid()):
+        return False
+    fn = om.MFnNurbsCurve()
+    try:
+        for h, s in zip(handles, strands):
+            fn.setObject(h.object())
+            fn.setCVPositions(om.MPointArray([om.MPoint(p[0], p[1], p[2]) for p in s.points]),
+                              om.MSpace.kObject)
+            fn.updateCurve()
+    except RuntimeError:
+        return False
+    return True
+
+
 def build_curves(parent, strands, smooth=False):
-    """Create one nurbsCurve shape per strand under `parent` (fast, API)."""
+    """Create one nurbsCurve shape per strand under `parent` (fast, API).
+    Returns MObjectHandles of the created shapes."""
     pobj = _mobject(parent)
     fn = om.MFnNurbsCurve()
     knots1 = {}
-    count = 0
+    handles = []
     for s in strands:
         n = len(s.points)
         if n < 2:
@@ -237,6 +272,8 @@ def build_curves(parent, strands, smooth=False):
                 kv = [0.0, 0.0] + [float(i) for i in range(spans + 1)] + [float(spans)] * 2
                 kn = om.MDoubleArray(kv)
             knots1[key] = kn
-        fn.create(cvs, kn, deg, om.MFnNurbsCurve.kOpen, False, False, pobj)
-        count += 1
-    return count
+        tr = fn.create(cvs, kn, deg, om.MFnNurbsCurve.kOpen, False, False, pobj)
+        # create() returns the parent transform when one is given: keep the new shape
+        shape = fn.object() if not tr.hasFn(om.MFn.kNurbsCurve) else tr
+        handles.append(om.MObjectHandle(shape))
+    return handles

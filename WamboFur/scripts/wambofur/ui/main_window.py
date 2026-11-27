@@ -127,7 +127,7 @@ class WamboFurWindow(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.time_cb.toggled.connect(self._render_settings)
         upd = QtWidgets.QPushButton(u"⟳  Update")
         upd.setObjectName("wfPrimary")
-        upd.clicked.connect(self.update_preview)
+        upd.clicked.connect(self._full_update)
         bl.addLayout(_hbox(logo, QtWidgets.QLabel("  System"), self.sys_combo, new_btn, del_btn, None,
                            QtWidgets.QLabel("Preview"), self.density, self.live, self.time_cb, upd))
         root.addWidget(bar)
@@ -182,15 +182,17 @@ class WamboFurWindow(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.brush_group = QtWidgets.QButtonGroup(self)
         self.brush_group.setExclusive(True)
         labels = [("comb", "Comb"), ("length", "Length"), ("smooth", "Smooth"), ("puff", "Puff"),
-                  ("cut", "Cut"), ("add", "Add"), ("remove", "Remove"), ("off", "Off")]
+                  ("straighten", "Straighten"), ("move", "Move"), ("cut", "Cut"), ("add", "Add"),
+                  ("remove", "Remove"), ("off", "Off")]
+        self.OFF_INDEX = len(labels) - 1
         for i, (mode, text) in enumerate(labels):
             b = QtWidgets.QToolButton()
             b.setText(text)
             b.setCheckable(True)
-            b.setMinimumWidth(70)
+            b.setMinimumWidth(62)
             b.setProperty("mode", mode)
             self.brush_group.addButton(b, i)
-            grid.addWidget(b, i // 4, i % 4)
+            grid.addWidget(b, i // 5, i % 5)
             b.clicked.connect(lambda checked=False, m=mode: self.set_brush(m))
         lay.addLayout(grid)
         self.b_radius = _ispin(4, 600, int(brushes.STATE.radius))
@@ -200,6 +202,10 @@ class WamboFurWindow(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.b_keep.setChecked(True)
         self.b_upd = QtWidgets.QCheckBox("Update fur after each stroke")
         self.b_upd.setChecked(True)
+        self.b_live = QtWidgets.QCheckBox("Live fur while brushing")
+        self.b_live.setChecked(True)
+        self.b_live.setToolTip("Re-evaluates the preview during the stroke when it is fast enough "
+                               "(lower the Preview % for heavy grooms)")
         for wdg in (self.b_radius, self.b_strength):
             wdg.valueChanged.connect(self._brush_settings)
         self.b_keep.toggled.connect(self._brush_settings)
@@ -208,9 +214,12 @@ class WamboFurWindow(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         f2.addRow("Strength", self.b_strength)
         f2.addRow("", self.b_keep)
         f2.addRow("", self.b_upd)
+        f2.addRow("", self.b_live)
         lay.addLayout(f2)
-        hint = QtWidgets.QLabel("Drag in the viewport over the guide curves. Each stroke is one undo step "
-                                "(Ctrl+Z). Add/Remove click on the mesh.")
+        hint = QtWidgets.QLabel("Drag in the viewport over the guide curves - the circle shows the brush.\n"
+                                "B + left-drag: radius   \u00b7   B + middle-drag: strength\n"
+                                "Shift: smooth   \u00b7   Ctrl: invert (Length shortens, Puff flattens)\n"
+                                "Each stroke is one undo step (Ctrl+Z). Add/Remove: click on the mesh.")
         hint.setWordWrap(True)
         hint.setObjectName("wfDim")
         lay.addWidget(hint)
@@ -266,6 +275,12 @@ class WamboFurWindow(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.r_end = _spin(-1e6, 1e6, cmds.playbackOptions(q=True, maxTime=True), 1, 1)
         seq = QtWidgets.QPushButton("Export Sequence")
         seq.clicked.connect(lambda: self.export(True))
+        self.r_auto = QtWidgets.QCheckBox("Export automatically when rendering")
+        self.r_auto.setToolTip("Adds a Pre Render Frame hook: every frame rendered (Render View, batch, farm)\n"
+                               "exports the fur first - just hit Render, no manual export needed.")
+        self.r_auto.setChecked(render.render_hook_enabled())
+        self.r_auto.toggled.connect(render.set_render_hook)
+        lay.addWidget(self.r_auto)
         lay.addWidget(one)
         lay.addLayout(_hbox(QtWidgets.QLabel("Frames"), self.r_start, self.r_end, seq))
         lay.addStretch(1)
@@ -382,8 +397,9 @@ class WamboFurWindow(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         try:
             data = self.system.update_preview(self.graph)
             self.view.refresh_flags(self.system.last_stats, {})
-            self._status(u"{:,} strands in viewport  ·  {:,} points  ·  {:.2f}s".format(
-                len(data.strands), data.point_count(), self.system.last_time))
+            self._status(u"{:,} strands in viewport  \u00b7  {:,} points  \u00b7  eval {:.2f}s  "
+                         u"\u00b7  draw {:.2f}s".format(len(data.strands), data.point_count(),
+                                                    self.system.last_time, self.system.last_draw_time))
         except EvalError as e:
             self.view.refresh_flags(self.system.last_stats, self.system.last_errors)
             self._status(str(e), error=True)
@@ -392,6 +408,10 @@ class WamboFurWindow(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._status("Error: %s (see Script Editor)" % e, error=True)
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
+
+    def _full_update(self):
+        scene.clear_cache()      # re-read mesh topology (after modelling changes)
+        self.update_preview()
 
     def _density_changed(self, v):
         if self.system and not self._loading:
@@ -429,19 +449,41 @@ class WamboFurWindow(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         g = self.system.guides_group() if self.system else None
         if not g:
             self._status("Create guides first (Groom tab).", error=True)
-            self.brush_group.button(7).setChecked(True)
+            self.brush_group.button(self.OFF_INDEX).setChecked(True)
             return
         self._brush_settings()
-        brushes.activate(mode, g, on_stroke=self._after_stroke)
+        brushes.activate(mode, g, on_stroke=self._after_stroke, on_settings=self._brush_from_viewport)
 
     def _brush_settings(self, *a):
         brushes.STATE.radius = float(self.b_radius.value())
         brushes.STATE.strength = float(self.b_strength.value())
         brushes.STATE.preserve_length = self.b_keep.isChecked()
+        brushes.sync_settings()
 
-    def _after_stroke(self, group):
-        if self.b_upd.isChecked():
-            self.update_preview()
+    def _brush_from_viewport(self):
+        """B + drag in the viewport changed radius/strength: mirror it in the UI."""
+        for wdg, val in ((self.b_radius, int(brushes.STATE.radius)), (self.b_strength, brushes.STATE.strength)):
+            wdg.blockSignals(True)
+            wdg.setValue(val)
+            wdg.blockSignals(False)
+
+    def _after_stroke(self, group, final=True):
+        if final:
+            if self.b_upd.isChecked():
+                self._quiet_update()
+        elif self.b_live.isChecked() and getattr(self.system, "last_time", 1.0) < 0.25:
+            self._quiet_update()
+
+    def _quiet_update(self):
+        """Preview update without the wait cursor (used while brushing)."""
+        if not self.system:
+            return
+        try:
+            data = self.system.update_preview(self.graph)
+            self._status(u"{:,} strands  \u00b7  eval {:.2f}s  \u00b7  draw {:.2f}s".format(
+                len(data.strands), self.system.last_time, self.system.last_draw_time))
+        except EvalError as e:
+            self._status(str(e), error=True)
 
     # =============================================================== render
     def _render_settings(self, *a):

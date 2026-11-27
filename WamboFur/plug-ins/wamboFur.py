@@ -2,11 +2,18 @@
 
 Load it from Windows > Settings/Preferences > Plug-in Manager, or
     cmds.loadPlugin("wamboFur.py")
+
+Registers
+  wamboFur               command (editor / update / export / render-time export)
+  wamboFurGroomEdit      internal undoable command used by the groom brushes
+  wamboFurBrushCursor    locator drawn in Viewport 2.0 (brush circle)
 """
 import sys
 import os
 
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaRender as omr
+import maya.api.OpenMayaUI as omui
 import maya.cmds as cmds
 
 # make the package importable even when the module file is not installed
@@ -16,19 +23,23 @@ if _here and os.path.isdir(_scripts) and _scripts not in sys.path:
     sys.path.append(_scripts)
 
 VENDOR = "Wambo"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 
 def maya_useNewAPI():
     pass
 
 
+# =========================================================================
+# wamboFur command
+# =========================================================================
 class WamboFurCmd(om.MPxCommand):
     """MEL/Python command:
-        wamboFur               -> open the editor
-        wamboFur -u            -> update every fur preview
-        wamboFur -e            -> export every fur system for render (current frame)
-        wamboFur -e -s 1 -f 100 -> export a frame range
+        wamboFur                 -> open the editor
+        wamboFur -u              -> update every fur preview
+        wamboFur -e              -> export every fur system for render (current frame)
+        wamboFur -e -s 1 -f 100  -> export a frame range
+        wamboFur -r              -> render-time export (used by the Pre Render Frame hook)
     """
     NAME = "wamboFur"
 
@@ -41,6 +52,7 @@ class WamboFurCmd(om.MPxCommand):
         s = om.MSyntax()
         s.addFlag("-u", "-update")
         s.addFlag("-e", "-export")
+        s.addFlag("-r", "-renderTime")
         s.addFlag("-s", "-start", om.MSyntax.kDouble)
         s.addFlag("-f", "-end", om.MSyntax.kDouble)
         return s
@@ -51,6 +63,9 @@ class WamboFurCmd(om.MPxCommand):
         if db.isFlagSet("-u"):
             for n in system.list_systems():
                 system.FurSystem(n).update_preview()
+            return
+        if db.isFlagSet("-r"):
+            self.setResult(render.render_time_export())
             return
         if db.isFlagSet("-e"):
             start = db.flagArgumentDouble("-s", 0) if db.isFlagSet("-s") else None
@@ -65,16 +80,190 @@ class WamboFurCmd(om.MPxCommand):
         main_window.show()
 
 
+# =========================================================================
+# undoable groom edit (one brush stroke)
+# =========================================================================
+class GroomEditCmd(om.MPxCommand):
+    """Takes the stroke prepared by wambofur.maya.brushes (PENDING) and makes
+    it undoable. The new CV positions are already applied when it runs."""
+    NAME = "wamboFurGroomEdit"
+
+    def __init__(self):
+        om.MPxCommand.__init__(self)
+        self.edits = []
+
+    @staticmethod
+    def creator():
+        return GroomEditCmd()
+
+    def isUndoable(self):
+        return True
+
+    def doIt(self, args):
+        from wambofur.maya import brushes
+        self.edits = brushes.take_pending()
+
+    def redoIt(self):
+        self._apply(2)
+
+    def undoIt(self):
+        self._apply(1)
+
+    def _apply(self, which):
+        from wambofur.maya import brushes
+        brushes.apply_edits(self.edits, which)
+
+
+# =========================================================================
+# brush cursor locator (Viewport 2.0)
+# =========================================================================
+class BrushCursorNode(omui.MPxLocatorNode):
+    NAME = "wamboFurBrushCursor"
+    ID = om.MTypeId(0x0007F7A1)          # local/testing range
+    DRAW_CLASSIFICATION = "drawdb/geometry/wamboFurBrushCursor"
+    DRAW_REGISTRANT = "wamboFurBrushCursorOverride"
+
+    @staticmethod
+    def creator():
+        return BrushCursorNode()
+
+    @staticmethod
+    def initialize():
+        nf = om.MFnNumericAttribute()
+        tf = om.MFnTypedAttribute()
+        attrs = []
+        for ln, sn, typ, dv in (("cursorX", "cux", om.MFnNumericData.kDouble, 0.0),
+                                ("cursorY", "cuy", om.MFnNumericData.kDouble, 0.0),
+                                ("radius", "rad", om.MFnNumericData.kDouble, 60.0),
+                                ("strength", "stg", om.MFnNumericData.kDouble, 0.7),
+                                ("active", "act", om.MFnNumericData.kBoolean, False),
+                                ("pressed", "prs", om.MFnNumericData.kBoolean, False)):
+            a = nf.create(ln, sn, typ, dv)
+            nf.storable = False
+            attrs.append(a)
+        a = nf.createColor("cursorColor", "cuc")
+        nf.default = (1.0, 0.66, 0.23)
+        attrs.append(a)
+        for ln, sn in (("camera", "cam"), ("label", "lbl")):
+            a = tf.create(ln, sn, om.MFnData.kString)
+            tf.storable = False
+            attrs.append(a)
+        for a in attrs:
+            om.MPxNode.addAttribute(a)
+
+
+class _CursorData(om.MUserData):
+    def __init__(self):
+        try:
+            om.MUserData.__init__(self, False)
+        except TypeError:          # newer Maya: no deleteAfterUse argument
+            om.MUserData.__init__(self)
+        self.active = False
+        self.x = self.y = 0.0
+        self.radius = 60.0
+        self.strength = 0.7
+        self.pressed = False
+        self.camera = ""
+        self.label = ""
+        self.color = om.MColor((1.0, 0.66, 0.23, 1.0))
+
+
+class BrushCursorOverride(omr.MPxDrawOverride):
+    @staticmethod
+    def creator(obj):
+        return BrushCursorOverride(obj)
+
+    def __init__(self, obj):
+        omr.MPxDrawOverride.__init__(self, obj, None, True)
+
+    def supportedDrawAPIs(self):
+        return omr.MRenderer.kAllDevices
+
+    def isBounded(self, objPath, cameraPath):
+        return False
+
+    def hasUIDrawables(self):
+        return True
+
+    def prepareForDraw(self, objPath, cameraPath, frameContext, oldData):
+        data = oldData if isinstance(oldData, _CursorData) else _CursorData()
+        node = objPath.node()
+        fn = om.MFnDependencyNode(node)
+
+        def plug(n):
+            return fn.findPlug(n, False)
+        data.active = plug("active").asBool()
+        data.pressed = plug("pressed").asBool()
+        data.x = plug("cursorX").asDouble()
+        data.y = plug("cursorY").asDouble()
+        data.radius = plug("radius").asDouble()
+        data.strength = plug("strength").asDouble()
+        data.camera = plug("camera").asString()
+        data.label = plug("label").asString()
+        c = plug("cursorColor")
+        data.color = om.MColor((c.child(0).asFloat(), c.child(1).asFloat(), c.child(2).asFloat(), 1.0))
+        return data
+
+    def addUIDrawables(self, objPath, dm, frameContext, data):
+        if not isinstance(data, _CursorData) or not data.active:
+            return
+        try:
+            cam = frameContext.getCurrentCameraPath().fullPathName()
+        except Exception:
+            cam = data.camera
+        if data.camera and cam and cam != data.camera:
+            return  # only draw in the viewport under the mouse
+        centre = om.MPoint(data.x, data.y, 0.0)
+        dm.beginDrawable()
+        # soft outer shadow for readability on any background
+        dm.setColor(om.MColor((0.0, 0.0, 0.0, 0.55)))
+        dm.setLineWidth(3.5)
+        dm.circle2d(centre, data.radius, False)
+        dm.setColor(data.color)
+        dm.setLineWidth(2.0 if data.pressed else 1.5)
+        dm.circle2d(centre, data.radius, False)
+        # inner falloff ring = strength
+        col = om.MColor((data.color.r, data.color.g, data.color.b, 0.45))
+        dm.setColor(col)
+        dm.setLineWidth(1.0)
+        dm.setLineStyle(omr.MUIDrawManager.kDashed)
+        dm.circle2d(centre, max(data.radius * (1.0 - 0.5 * data.strength), 2.0), False)
+        dm.setLineStyle(omr.MUIDrawManager.kSolid)
+        dm.setColor(data.color)
+        dm.circle2d(centre, 1.8, True)
+        if data.label:
+            dm.text2d(om.MPoint(data.x, data.y + data.radius + 6, 0.0), data.label,
+                      omr.MUIDrawManager.kCenter)
+        dm.endDrawable()
+
+
+# =========================================================================
 def initializePlugin(obj):
     plugin = om.MFnPlugin(obj, VENDOR, VERSION, "Any")
     plugin.registerCommand(WamboFurCmd.NAME, WamboFurCmd.creator, WamboFurCmd.syntax)
-    if not om.MGlobal.mayaState() == om.MGlobal.kBatch:
+    plugin.registerCommand(GroomEditCmd.NAME, GroomEditCmd.creator)
+    plugin.registerNode(BrushCursorNode.NAME, BrushCursorNode.ID, BrushCursorNode.creator,
+                        BrushCursorNode.initialize, om.MPxNode.kLocatorNode,
+                        BrushCursorNode.DRAW_CLASSIFICATION)
+    omr.MDrawRegistry.registerDrawOverrideCreator(BrushCursorNode.DRAW_CLASSIFICATION,
+                                                  BrushCursorNode.DRAW_REGISTRANT,
+                                                  BrushCursorOverride.creator)
+    if om.MGlobal.mayaState() != om.MGlobal.kBatch:
         from wambofur.maya import menu
         cmds.evalDeferred(menu.create)
 
 
 def uninitializePlugin(obj):
     plugin = om.MFnPlugin(obj)
+    try:
+        from wambofur.maya import brushes
+        brushes.deactivate(silent=True)
+    except Exception:
+        pass
+    omr.MDrawRegistry.deregisterDrawOverrideCreator(BrushCursorNode.DRAW_CLASSIFICATION,
+                                                    BrushCursorNode.DRAW_REGISTRANT)
+    plugin.deregisterNode(BrushCursorNode.ID)
+    plugin.deregisterCommand(GroomEditCmd.NAME)
     plugin.deregisterCommand(WamboFurCmd.NAME)
     try:
         from wambofur.maya import menu

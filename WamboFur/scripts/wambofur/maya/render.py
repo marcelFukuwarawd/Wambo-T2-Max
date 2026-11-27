@@ -130,7 +130,7 @@ def _build_abc_group(sysm, data, st):
         strands.append(Strand(pts))
         widths.append(ws)
     with fsys.NoUndo():
-        fsys.build_curves(grp, strands, smooth=False)
+        fsys.build_curves(grp, strands, smooth=False)  # returns handles; shapes listed below
         shapes = cmds.listRelatives(grp, shapes=True, fullPath=True) or []
         for shp, ws in zip(shapes, widths):
             cmds.addAttr(shp, longName="width", dataType="doubleArray")
@@ -242,3 +242,55 @@ def render(sysm, start=None, end=None, step=1.0):
     if renderer == "vray":
         return render_vray(sysm, start, end, step)
     return render_arnold(sysm, start, end, step)
+
+
+# ------------------------------------------------------- render-time export
+HOOK = 'if (!`pluginInfo -q -loaded wamboFur`) loadPlugin wamboFur; wamboFur -renderTime;'
+
+
+def render_hook_enabled():
+    cur = cmds.getAttr("defaultRenderGlobals.preRenderMel") or ""
+    return HOOK in cur
+
+
+def set_render_hook(enabled):
+    """Add/remove the Pre Render Frame MEL hook so every rendered frame
+    (Render View, batch render, farm) exports the fur first - no manual
+    Export step, like a render-time procedural."""
+    cur = cmds.getAttr("defaultRenderGlobals.preRenderMel") or ""
+    cur = cur.replace(HOOK, "").strip()
+    if enabled:
+        cur = (cur + ("; " if cur and not cur.endswith(";") else " ") + HOOK).strip()
+    cmds.setAttr("defaultRenderGlobals.preRenderMel", cur, type="string")
+
+
+def render_time_export():
+    """Called by the hook before each frame: export every fur system at the
+    current frame and make sure its render node reads per-frame files."""
+    frame = cmds.currentTime(q=True)
+    paths = []
+    for name in fsys.list_systems():
+        sysm = fsys.FurSystem(name)
+        if sysm.settings().get("renderer", "arnold") == "vray":
+            path, _ = export_abc(sysm)
+            path = _rename_to_frame(path, "abc", frame)
+            proxy = sysm.name + "_vrayProxy"
+            if not (cmds.objExists(proxy) and cmds.objExists(sysm.name + "_vrayProxySeq")):
+                vray_proxy(sysm, path, sequence=True)
+            if cmds.objExists(proxy):
+                cmds.setAttr(proxy + ".fileName", path, type="string")
+        else:
+            path, _ = export_ass(sysm, frame)
+            arnold_standin(sysm, path, sequence=True)
+        paths.append(path)
+        print("Wambo Fur: render-time export %s -> %s" % (name, path))
+    return paths
+
+
+def _rename_to_frame(path, ext, frame):
+    """export_abc without a frame writes <name>.abc: move it to <name>.####.abc."""
+    target = path[:-(len(ext) + 1)] + ".%04d.%s" % (int(round(frame)), ext)
+    if os.path.exists(target):
+        os.remove(target)
+    os.rename(path, target)
+    return target

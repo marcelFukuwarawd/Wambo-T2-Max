@@ -24,6 +24,13 @@ def mesh_shape(name):
     return shapes[0] if shapes else None
 
 
+_TOPO = {}   # mesh shape -> (signature, triangles, tri_uvs, rest_points)
+
+
+def clear_cache():
+    _TOPO.clear()
+
+
 def read_surface(name):
     shape = mesh_shape(name)
     if not shape:
@@ -31,6 +38,18 @@ def read_surface(name):
     fn = om.MFnMesh(dag_path(shape))
     points = [(p.x, p.y, p.z) for p in fn.getPoints(om.MSpace.kWorld)]
     normals = [(n.x, n.y, n.z) for n in fn.getVertexNormals(False, om.MSpace.kWorld)]
+    sig = (fn.numVertices, fn.numPolygons, fn.numFaceVertices, fn.numUVs())
+    cached = _TOPO.get(shape)
+    if cached and cached[0] == sig:
+        # topology / UVs unchanged: only positions and normals are re-read
+        return Surface(points, cached[1], normals, cached[2], name=name, rest_points=cached[3])
+    triangles, tri_uvs = _read_topology(fn)
+    rest = read_rest_points(shape, len(points))
+    _TOPO[shape] = (sig, triangles, tri_uvs, rest)
+    return Surface(points, triangles, normals, tri_uvs, name=name, rest_points=rest)
+
+
+def _read_topology(fn):
     tri_counts, tri_verts = fn.getTriangles()
     vcounts, vlist = fn.getVertices()
     tri_counts, tri_verts = list(tri_counts), list(tri_verts)
@@ -62,8 +81,7 @@ def read_surface(name):
                 else:
                     tri_uvs.append(((0.0, 0.0), (0.0, 0.0), (0.0, 0.0)))
         fv += nv
-    return Surface(points, triangles, normals, tri_uvs if has_uv else None, name=name,
-                   rest_points=read_rest_points(shape, len(points)))
+    return triangles, (tri_uvs if has_uv else None)
 
 
 def read_rest_points(shape, count):
